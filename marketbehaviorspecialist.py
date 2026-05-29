@@ -1,9 +1,4 @@
 """
-Market behavior subagent aligned to scheme.py.
-
-Expected external dependency:
-    from scheme import MarketSignal
-
 This module analyzes OHLCV market history and returns a MarketSignal
 that matches the shared swarm schema.
 """
