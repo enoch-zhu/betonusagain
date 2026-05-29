@@ -12,11 +12,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from typing import Dict, Optional
-
-import numpy as np
-import pandas as pd
-
-from scheme import MarketSignal
+from schemas import MarketSignal
 
 
 class MarketBehaviorSubagent:
