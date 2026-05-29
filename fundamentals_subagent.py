@@ -17,10 +17,12 @@ Usage:
 
 import json
 import random
-from typing import Any
+from typing import Any, Optional
 
 import anthropic
 from anthropic import beta_tool
+
+from schemas import FundamentalsSignal
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -481,7 +483,7 @@ def get_league_standings(category: str, season: str = "2023-24") -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 _SYSTEM_PROMPT = """\
-You are a specialized sports betting research analyst subagent.
+You are a specialized sports betting fundamentals analyst subagent.
 
 Your responsibilities:
 - Retrieve and synthesize historical team performance data using your tools
@@ -493,6 +495,17 @@ Your responsibilities:
 Supported categories: basketball (NBA), football (NFL), esports.
 When listing available teams, call list_available_teams first.
 Always compare at least 2–3 seasons before drawing trend conclusions.
+
+IMPORTANT — Final step:
+After completing your research and analysis, you MUST call submit_fundamentals_signal
+with the following fields derived from your findings:
+  - score: overall team strength from -1.0 (very weak) to 1.0 (very strong),
+    based on win percentage, point differential, and ATS performance
+  - win_trend: recent performance direction — "positive" (improving), "neutral" (stable),
+    or "negative" (declining) — based on multi-season and recent-game data
+  - summary: a concise 2–4 sentence narrative capturing the key findings
+  - confidence: your confidence in the assessment from 0.0 (very uncertain) to 1.0 (very certain),
+    reflecting data availability and signal consistency
 """
 
 
@@ -514,7 +527,7 @@ class BettingResearchSubagent:
     def __init__(self, model: str = "claude-opus-4-8"):
         self.client = anthropic.Anthropic()
         self.model = model
-        self._tools = [
+        self._base_tools = [
             list_available_teams,
             get_team_history,
             get_scoring_trends,
@@ -523,7 +536,7 @@ class BettingResearchSubagent:
             get_league_standings,
         ]
 
-    def research(self, query: str, verbose: bool = False) -> str:
+    def research(self, query: str, verbose: bool = False) -> FundamentalsSignal:
         """
         Research historical data for a given betting query.
 
@@ -532,31 +545,59 @@ class BettingResearchSubagent:
             verbose: If True, print tool calls and intermediate messages.
 
         Returns:
-            Final analysis text from the agent.
+            FundamentalsSignal with score, win_trend, summary, and confidence.
         """
+        captured: list[FundamentalsSignal] = []
+
+        def submit_fundamentals_signal(
+            score: float,
+            win_trend: str,
+            summary: str,
+            confidence: float,
+        ) -> str:
+            """Submit the final fundamentals signal after completing all research.
+
+            Args:
+                score: Overall team strength from -1.0 (very weak) to 1.0 (very strong)
+                win_trend: Performance direction — "positive", "neutral", or "negative"
+                summary: Concise 2–4 sentence narrative of the key findings
+                confidence: Confidence in the assessment from 0.0 to 1.0
+            """
+            captured.append(FundamentalsSignal(
+                score=max(-1.0, min(1.0, float(score))),
+                revenue_trend=win_trend,
+                summary=summary,
+                confidence=max(0.0, min(1.0, float(confidence))),
+            ))
+            return json.dumps({"status": "signal recorded"})
+
+        submit_tool = beta_tool(submit_fundamentals_signal)
+        tools = self._base_tools + [submit_tool]
+
         runner = self.client.beta.messages.tool_runner(
             model=self.model,
             max_tokens=4096,
             thinking={"type": "adaptive"},
             output_config={"effort": "medium"},
             system=_SYSTEM_PROMPT,
-            tools=self._tools,
+            tools=tools,
             messages=[{"role": "user", "content": query}],
         )
 
-        full_text = []
         for message in runner:
             for block in message.content:
-                if getattr(block, "type", None) == "text":
-                    if verbose:
-                        print(block.text, end="", flush=True)
-                    full_text.append(block.text)
-                elif getattr(block, "type", None) == "tool_use" and verbose:
+                if getattr(block, "type", None) == "tool_use" and verbose:
                     print(f"\n[tool → {block.name}({json.dumps(block.input, separators=(',',':'))})]")
+                elif getattr(block, "type", None) == "text" and verbose:
+                    print(block.text, end="", flush=True)
 
         if verbose:
-            print()  # trailing newline
-        return "".join(full_text)
+            print()
+
+        if not captured:
+            raise RuntimeError("Agent did not call submit_fundamentals_signal — no signal produced.")
+
+        return captured[-1]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -578,8 +619,8 @@ def main() -> None:
         print(f"\n{separator}")
         print(f"Query {i}: {query}")
         print(separator)
-        result = agent.research(query, verbose=True)
-        print(f"\n[Research complete — {len(result)} chars]")
+        signal = agent.research(query, verbose=True)
+        print(f"\n[FundamentalsSignal] {json.dumps(signal.__dict__, indent=2)}")
 
 
 if __name__ == "__main__":
